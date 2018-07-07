@@ -2,5 +2,7 @@
 name = "document-consumer"
 version = "0.1.0"
 authors = ["Denys Vitali <denys@denv.it>"]
+license = "MIT"
 
 [dependencies]
+yaml-rust = "0.4"
