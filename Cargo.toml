@@ -1,0 +1,6 @@
+[package]
+name = "document-consumer"
+version = "0.1.0"
+authors = ["Denys Vitali <denys@denv.it>"]
+
+[dependencies]
