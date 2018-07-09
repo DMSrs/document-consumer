@@ -53,16 +53,20 @@ fn load_config() -> Option<Config> {
     None
 }
 
-fn do_loop(conn: &Connection){
-    println!("Looping...");
-    /*let query = conn.query("SELECT COUNT(*) FROM documents", &[]);
-    if let Ok(res) = query {
-        for row in res.iter() {
-            println!("We've got {} documents", row.get::<_,i64>(0));
+fn parse_document(conn: &Connection, path: &PathBuf){
+    println!("Parsing document {:?}", path);
+}
+
+fn document_change(conn: &Connection, event: &DebouncedEvent){
+    match event {
+        DebouncedEvent::Create(p) => {
+            println!("Created {:?}", p);
+            parse_document(conn, p);
+        }
+        _ => {
+
         }
     }
-    thread::sleep(time::Duration::from_secs(5));*/
-    do_loop(&conn);
 }
 
 fn main() {
@@ -90,13 +94,13 @@ fn main() {
 
     println!("DB Connection successful!");
 
-    //do_loop(&conn.unwrap());
-
     let dirs = vec![PathBuf::from("consumption-dir/")];
 
-    let mut fwatcher = Fwatcher::<Box<Fn(&DebouncedEvent)>>::new(dirs, Box::new(|e|
+    let c = conn.unwrap();
+
+    Fwatcher::<Box<Fn(&DebouncedEvent)>>::new(dirs, Box::new(move |e|
     {
-        println!("Event: {:?}", e);
+        document_change(&c, e);
     }))
     .pattern(Pattern::new("**/*.pdf").unwrap())
     .interval(Duration::new(1, 0))
