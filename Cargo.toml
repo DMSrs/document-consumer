@@ -9,3 +9,4 @@ r2d2 = "0.8.2"
 r2d2_postgres = "0.14.0"
 postgres = { version= "0.15", features = ["with-chrono"] }
 yaml-rust = "0.4"
+fwatcher = { git = "https://github.com/dmsrs/fwatcher.rs" }

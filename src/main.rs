@@ -1,10 +1,23 @@
 extern crate yaml_rust;
 extern crate postgres;
+extern crate fwatcher;
 
 use std::error::Error;
 
 mod config;
 use config::Config;
+
+use std::fs::File;
+
+use std::io::prelude::*;
+use postgres::Connection;
+use postgres::TlsMode;
+use std::time::Duration;
+use std::path::PathBuf;
+
+use fwatcher::Fwatcher;
+use fwatcher::glob::Pattern;
+use fwatcher::notify::DebouncedEvent;
 
 use yaml_rust::{YamlLoader};
 fn load_config() -> Option<Config> {
@@ -39,22 +52,16 @@ fn load_config() -> Option<Config> {
 
     None
 }
-use std::fs::File;
-
-use std::io::prelude::*;
-use postgres::Connection;
-use postgres::TlsMode;
-use std::{thread,time};
 
 fn do_loop(conn: &Connection){
     println!("Looping...");
-    let query = conn.query("SELECT COUNT(*) FROM documents", &[]);
+    /*let query = conn.query("SELECT COUNT(*) FROM documents", &[]);
     if let Ok(res) = query {
         for row in res.iter() {
             println!("We've got {} documents", row.get::<_,i64>(0));
         }
     }
-    thread::sleep(time::Duration::from_secs(5));
+    thread::sleep(time::Duration::from_secs(5));*/
     do_loop(&conn);
 }
 
@@ -83,5 +90,16 @@ fn main() {
 
     println!("DB Connection successful!");
 
-    do_loop(&conn.unwrap());
+    //do_loop(&conn.unwrap());
+
+    let dirs = vec![PathBuf::from("consumption-dir/")];
+
+    let mut fwatcher = Fwatcher::<Box<Fn(&DebouncedEvent)>>::new(dirs, Box::new(|e|
+    {
+        println!("Event: {:?}", e);
+    }))
+    .pattern(Pattern::new("**/*.pdf").unwrap())
+    .interval(Duration::new(1, 0))
+    .restart(false)
+    .run();
 }
