@@ -73,17 +73,18 @@ fn parse_document(conn: &Connection, path: &PathBuf){
     let mut sha256_bytes : [u8; 32] = Default::default();
     sha256_bytes.copy_from_slice(&sha256.result()[..32]);
 
-    let mut hex_string : String = String::new();
-    sha256_bytes.write_hex(&mut hex_string).expect("Unable to write HEX");
+    let mut sha256_hex : String = String::new();
+    sha256_bytes.write_hex(&mut sha256_hex).expect("Unable to write HEX");
 
-    println!("SHA256 Sum: {}", hex_string);
+    println!("SHA256 Sum: {}", sha256_hex);
 
 
+    // TODO: Improve w/ libpoppler.
     let mut child = Command::new("pdftoppm")
         .arg(path)
         .arg("-r")
         .arg("300")
-        .arg("output")
+        .arg(sha256_hex)
         .arg("-png")
         .spawn().expect("Unable to start pdftoppm");
     let exit_code = child.wait().expect("Execution failed");
