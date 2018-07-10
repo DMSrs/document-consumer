@@ -1,4 +1,7 @@
-config:
-  db_hostname: '172.17.0.2'
-  db_username: 'postgres'
-  db_password: 'default'
+db:
+  hostname: "172.17.0.2"
+  username: "postgres"
+  password: "default"
+ocr:
+  lang: "ita"
+  dpi:  600

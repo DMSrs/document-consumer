@@ -1,4 +1,3 @@
-extern crate yaml_rust;
 extern crate postgres;
 extern crate fwatcher;
 extern crate sha2;
@@ -6,12 +5,16 @@ extern crate hex;
 extern crate poppler;
 extern crate tesseract;
 extern crate glob;
+extern crate regex;
+
+#[macro_use] extern crate serde_derive;
+extern crate serde_yaml;
 
 
 use std::error::Error;
 
-mod config;
-use config::Config;
+mod models;
+use models::config::Config;
 
 use std::fs::File;
 
@@ -25,13 +28,14 @@ use fwatcher::Fwatcher;
 use fwatcher::glob::Pattern;
 use fwatcher::notify::DebouncedEvent;
 
-use yaml_rust::{YamlLoader};
 use std::process::Command;
 use std::fs;
 use sha2::Digest;
 use hex::ToHex;
 use tesseract::Tesseract;
-use glob::glob;
+use glob::{glob,Paths};
+use regex::Regex;
+
 
 fn load_config() -> Option<Config> {
     if let Ok(mut f) = File::open("./config.yml") {
@@ -40,29 +44,9 @@ fn load_config() -> Option<Config> {
             println!("Error: Unable to read from config file! {}", e.description());
             return None;
         }
-
-        if let Ok(yaml) = YamlLoader::load_from_str(&content) {
-            if !yaml.is_empty(){
-                let doc = &yaml[0];
-                let config = &doc["config"];
-                if !&config.is_badvalue() {
-                    let db_hostname : String = (&config["db_hostname"])
-                        .as_str().unwrap_or("hostname").to_string();
-                    let db_username : String = (&config["db_username"])
-                        .as_str().unwrap_or("postgres").to_string();
-                    let db_password : String = (&config["db_password"])
-                        .as_str().unwrap_or("default").to_string();
-
-                    return Some(Config {
-                        db_hostname,
-                        db_username,
-                        db_password
-                    });
-                }
-            }
-        }
+        return Some(serde_yaml::from_str(&content)
+            .unwrap_or(Config::new()));
     }
-
     None
 }
 
@@ -71,7 +55,7 @@ fn cleanup(path: &PathBuf){
     let _ = fs::remove_file(path);
 }
 
-fn parse_document(_conn: &Connection, path: &PathBuf){
+fn parse_document(_conn: &Connection, config: &Config, path: &PathBuf){
     println!("Parsing document {:?}", path);
 
     if !path.exists() {
@@ -118,7 +102,7 @@ fn parse_document(_conn: &Connection, path: &PathBuf){
     let mut child = Command::new("pdftoppm")
         .arg(path)
         .arg("-r")
-        .arg("300")
+        .arg(config.ocr.dpi.to_string())
         .arg(format!("tmp/{}",sha256_hex))
         .arg("-png")
         .spawn().expect("Unable to start pdftoppm");
@@ -138,17 +122,31 @@ fn parse_document(_conn: &Connection, path: &PathBuf){
     let mut pages_text : Vec<String> = Vec::new();
 
     let tesseract = Tesseract::new();
-    for entry in glob(&format!("tmp/{}*.png", sha256_hex)).unwrap() {
+    let paths : Paths = glob(&format!("tmp/{}*.png", sha256_hex)).unwrap();
+    for entry in paths {
         match entry {
             Ok(path) => {
-                println!("Parsing {:?}", path);
-                tesseract.set_lang("ita");
+                let file_name : String = String::from(path.file_name().unwrap().to_str().unwrap());
+                let re = Regex::new(r"^.*-(\d+)\.png$").unwrap();
+                if !re.is_match(&file_name) {
+                    println!("Regex unmatched");
+                    break;
+                }
+
+                let cap = re.captures(&file_name).unwrap();
+                let page_nr = (&cap[1]).parse::<i32>().unwrap();
+
+                println!("Page number: {}", page_nr);
+                // TODO: HashMap, maybe?
+
+                tesseract.set_lang(&config.ocr.lang);
                 tesseract.set_image(path.to_str().unwrap());
                 let recognized_text = tesseract.get_text();
                 &mut pages_text.push(String::from(recognized_text));
-            }
+                let _ = fs::remove_file(path);
+            },
 
-            Err(e) => println!("Globbing: Pattern matched but unreadable! {:?}", e)
+            _ => println!("Globbing: Pattern matched but unreadable!")
         }
     }
 
@@ -163,10 +161,10 @@ fn parse_document(_conn: &Connection, path: &PathBuf){
     cleanup(&path);
 }
 
-fn document_change(conn: &Connection, event: &DebouncedEvent){
+fn document_change(conn: &Connection, config: &Config, event: &DebouncedEvent){
     match event {
         DebouncedEvent::Create(p) => {
-            parse_document(conn, &p);
+            parse_document(conn, &config, &p);
         }
         _ => {
             println!("Event not parsed: {:?}", event);
@@ -175,21 +173,19 @@ fn document_change(conn: &Connection, event: &DebouncedEvent){
 }
 
 fn main() {
-    let cfg : Config = load_config().unwrap_or(Config {
-        db_hostname: String::new(),
-        db_username: String::new(),
-        db_password: String::new(),
-    });
+    let cfg : Config = load_config().unwrap_or(Config::new());
 
-    println!("Hostname: {}", cfg.db_hostname);
-    println!("Username: {}", cfg.db_username);
-    println!("Password: {}", cfg.db_password);
+    println!("Hostname: {}", cfg.db.hostname);
+    println!("Username: {}", cfg.db.username);
+    println!("Password: {}", cfg.db.password);
+    println!("OCR Language: {}", cfg.ocr.lang);
+    println!("OCR DPI: {}", cfg.ocr.dpi);
 
     let conn = Connection::connect(
         format!("postgres://{}:{}@{}:5432",
-                cfg.db_username,
-                cfg.db_password,
-                cfg.db_hostname
+                cfg.db.username,
+                cfg.db.password,
+                cfg.db.hostname
         ), TlsMode::None);
 
     if let Err(e) = conn {
@@ -205,7 +201,7 @@ fn main() {
 
     Fwatcher::<Box<Fn(&DebouncedEvent)>>::new(dirs, Box::new(move |e|
     {
-        document_change(&c, e);
+        document_change(&c, &cfg, e);
     }))
     .pattern(Pattern::new("*.pdf").unwrap())
     .interval(Duration::new(1, 0))
