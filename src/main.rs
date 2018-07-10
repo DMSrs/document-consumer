@@ -3,6 +3,11 @@ extern crate postgres;
 extern crate fwatcher;
 extern crate sha2;
 extern crate hex;
+extern crate poppler;
+extern crate tesseract;
+extern crate glob;
+
+
 use std::error::Error;
 
 mod config;
@@ -23,9 +28,10 @@ use fwatcher::notify::DebouncedEvent;
 use yaml_rust::{YamlLoader};
 use std::process::Command;
 use std::fs;
-use std::process::ExitStatus;
 use sha2::Digest;
-use hex::{FromHex, FromHexError, ToHex};
+use hex::ToHex;
+use tesseract::Tesseract;
+use glob::glob;
 
 fn load_config() -> Option<Config> {
     if let Ok(mut f) = File::open("./config.yml") {
@@ -60,14 +66,32 @@ fn load_config() -> Option<Config> {
     None
 }
 
-fn parse_document(conn: &Connection, path: &PathBuf){
+fn cleanup(path: &PathBuf){
+    println!("Removing original file from {:?} ...", path);
+    let _ = fs::remove_file(path);
+}
+
+fn parse_document(_conn: &Connection, path: &PathBuf){
     println!("Parsing document {:?}", path);
+
+    if !path.exists() {
+        println!("Provided path doesn't exists.");
+        return;
+    }
+
+    if !path.is_file() {
+        println!("Provided path is not a file!");
+        return;
+    }
+
+    let _ocr_text : Vec<String> = Vec::new();
+
+    // Calculate SHA256 sum (save as HEX)
 
     let mut sha256 = sha2::Sha256::default();
     let mut f = File::open(path).expect("Unable to open this file.");
     let mut buffer = Vec::new();
-    f.read_to_end(&mut buffer);
-
+    let _ = f.read_to_end(&mut buffer);
     sha256.input(buffer.as_slice());
 
     let mut sha256_bytes : [u8; 32] = Default::default();
@@ -78,21 +102,65 @@ fn parse_document(conn: &Connection, path: &PathBuf){
 
     println!("SHA256 Sum: {}", sha256_hex);
 
+    // TODO: Implement!
+    /*  Step 0:  Use poppler to check if the document has any text on it,
+                if this is the case, ignore the OCR part and just store
+                the document w/ the OCR field set as the document page text.
+        =====================================================================
+    */
+
+    //  Step 1: Convert document from PDF to PNG
+    //  =====================================================================
+
 
     // TODO: Improve w/ libpoppler.
+    // Convert document to images (to use tesseract-rs)
     let mut child = Command::new("pdftoppm")
         .arg(path)
         .arg("-r")
         .arg("300")
-        .arg(sha256_hex)
+        .arg(format!("tmp/{}",sha256_hex))
         .arg("-png")
         .spawn().expect("Unable to start pdftoppm");
     let exit_code = child.wait().expect("Execution failed");
 
-    if exit_code.success() {
-        println!("Removing ...");
-        fs::remove_file(path);
+    if !exit_code.success() {
+        // Unable to process document!
+        return;
     }
+
+    /*  Step 2:  OCR the generated files, store the OCR result
+                in a Vec<String>, so that we have a
+                page => text association.
+        =====================================================================
+    */
+
+    let mut pages_text : Vec<String> = Vec::new();
+
+    let tesseract = Tesseract::new();
+    for entry in glob(&format!("tmp/{}*.png", sha256_hex)).unwrap() {
+        match entry {
+            Ok(path) => {
+                println!("Parsing {:?}", path);
+                tesseract.set_lang("ita");
+                tesseract.set_image(path.to_str().unwrap());
+                let recognized_text = tesseract.get_text();
+                &mut pages_text.push(String::from(recognized_text));
+            }
+
+            Err(e) => println!("Globbing: Pattern matched but unreadable! {:?}", e)
+        }
+    }
+
+    for el in pages_text.iter() {
+        println!("Recognized text: {}", el);
+    }
+
+    /*  Step 3: Send everything to the backend, move the document to the
+                stored documents, {id}.pdf
+    */
+
+    cleanup(&path);
 }
 
 fn document_change(conn: &Connection, event: &DebouncedEvent){
