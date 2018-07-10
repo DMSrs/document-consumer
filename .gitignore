@@ -2,3 +2,4 @@
 /target
 **/*.rs.bk
 consumption-dir/
+tmp/
