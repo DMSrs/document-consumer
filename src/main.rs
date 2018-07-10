@@ -1,7 +1,8 @@
 extern crate yaml_rust;
 extern crate postgres;
 extern crate fwatcher;
-
+extern crate sha2;
+extern crate hex;
 use std::error::Error;
 
 mod config;
@@ -20,6 +21,12 @@ use fwatcher::glob::Pattern;
 use fwatcher::notify::DebouncedEvent;
 
 use yaml_rust::{YamlLoader};
+use std::process::Command;
+use std::fs;
+use std::process::ExitStatus;
+use sha2::Digest;
+use hex::{FromHex, FromHexError, ToHex};
+
 fn load_config() -> Option<Config> {
     if let Ok(mut f) = File::open("./config.yml") {
         let mut content = String::new();
@@ -55,16 +62,45 @@ fn load_config() -> Option<Config> {
 
 fn parse_document(conn: &Connection, path: &PathBuf){
     println!("Parsing document {:?}", path);
+
+    let mut sha256 = sha2::Sha256::default();
+    let mut f = File::open(path).expect("Unable to open this file.");
+    let mut buffer = Vec::new();
+    f.read_to_end(&mut buffer);
+
+    sha256.input(buffer.as_slice());
+
+    let mut sha256_bytes : [u8; 32] = Default::default();
+    sha256_bytes.copy_from_slice(&sha256.result()[..32]);
+
+    let mut hex_string : String = String::new();
+    sha256_bytes.write_hex(&mut hex_string).expect("Unable to write HEX");
+
+    println!("SHA256 Sum: {}", hex_string);
+
+
+    let mut child = Command::new("pdftoppm")
+        .arg(path)
+        .arg("-r")
+        .arg("300")
+        .arg("output")
+        .arg("-png")
+        .spawn().expect("Unable to start pdftoppm");
+    let exit_code = child.wait().expect("Execution failed");
+
+    if exit_code.success() {
+        println!("Removing ...");
+        fs::remove_file(path);
+    }
 }
 
 fn document_change(conn: &Connection, event: &DebouncedEvent){
     match event {
         DebouncedEvent::Create(p) => {
-            println!("Created {:?}", p);
-            parse_document(conn, p);
+            parse_document(conn, &p);
         }
         _ => {
-
+            println!("Event not parsed: {:?}", event);
         }
     }
 }
@@ -102,7 +138,7 @@ fn main() {
     {
         document_change(&c, e);
     }))
-    .pattern(Pattern::new("**/*.pdf").unwrap())
+    .pattern(Pattern::new("*.pdf").unwrap())
     .interval(Duration::new(1, 0))
     .restart(false)
     .run();
