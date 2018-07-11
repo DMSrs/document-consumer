@@ -142,6 +142,7 @@ dependencies = [
 name = "document-consumer"
 version = "0.1.0"
 dependencies = [
+ "chrono 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "fwatcher 0.5.1 (git+https://github.com/dmsrs/fwatcher.rs)",
  "glob 0.2.11 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",

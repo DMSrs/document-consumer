@@ -16,6 +16,7 @@ serde_derive = "1.0"
 hex = "0.3.1"
 glob = "0.2.11"
 regex = "1"
+chrono = "0.4"
 fwatcher = { git = "https://github.com/dmsrs/fwatcher.rs" }
 poppler = { git = "https://github.com/DMSrs/poppler-rs" }
 tesseract = { git = "https://github.com/DMSrs/tesseract-rs" }

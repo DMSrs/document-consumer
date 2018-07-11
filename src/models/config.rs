@@ -1,20 +1,20 @@
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub db: DbConfig,
-    pub ocr : OcrConfig
+    pub ocr: OcrConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DbConfig {
-    pub hostname : String,
-    pub username : String,
-    pub password : String,
+    pub hostname: String,
+    pub username: String,
+    pub password: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OcrConfig {
     pub lang: String,
-    pub dpi: i32
+    pub dpi: i32,
 }
 
 impl Config {

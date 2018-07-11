@@ -1,15 +1,16 @@
-extern crate postgres;
 extern crate fwatcher;
-extern crate sha2;
+extern crate glob;
 extern crate hex;
 extern crate poppler;
-extern crate tesseract;
-extern crate glob;
+extern crate postgres;
 extern crate regex;
+extern crate sha2;
+extern crate tesseract;
+extern crate chrono;
 
-#[macro_use] extern crate serde_derive;
+#[macro_use]
+extern crate serde_derive;
 extern crate serde_yaml;
-
 
 use std::error::Error;
 
@@ -18,44 +19,46 @@ use models::config::Config;
 
 use std::fs::File;
 
-use std::io::prelude::*;
 use postgres::Connection;
 use postgres::TlsMode;
-use std::time::Duration;
+use std::io::prelude::*;
 use std::path::PathBuf;
+use std::time::Duration;
 
-use fwatcher::Fwatcher;
 use fwatcher::glob::Pattern;
 use fwatcher::notify::DebouncedEvent;
+use fwatcher::Fwatcher;
 
-use std::process::Command;
-use std::fs;
-use sha2::Digest;
+use glob::{glob, Paths};
 use hex::ToHex;
-use tesseract::Tesseract;
-use glob::{glob,Paths};
 use regex::Regex;
-
+use sha2::Digest;
+use std::fs;
+use std::process::Command;
+use tesseract::Tesseract;
+use chrono::prelude::*;
 
 fn load_config() -> Option<Config> {
     if let Ok(mut f) = File::open("./config.yml") {
         let mut content = String::new();
         if let Err(e) = f.read_to_string(&mut content) {
-            println!("Error: Unable to read from config file! {}", e.description());
+            println!(
+                "Error: Unable to read from config file! {}",
+                e.description()
+            );
             return None;
         }
-        return Some(serde_yaml::from_str(&content)
-            .unwrap_or(Config::new()));
+        return Some(serde_yaml::from_str(&content).unwrap_or(Config::new()));
     }
     None
 }
 
-fn cleanup(path: &PathBuf){
+fn cleanup(path: &PathBuf) {
     println!("Removing original file from {:?} ...", path);
     let _ = fs::remove_file(path);
 }
 
-fn parse_document(_conn: &Connection, config: &Config, path: &PathBuf){
+fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
     println!("Parsing document {:?}", path);
 
     if !path.exists() {
@@ -68,7 +71,7 @@ fn parse_document(_conn: &Connection, config: &Config, path: &PathBuf){
         return;
     }
 
-    let _ocr_text : Vec<String> = Vec::new();
+    let _ocr_text: Vec<String> = Vec::new();
 
     // Calculate SHA256 sum (save as HEX)
 
@@ -78,11 +81,13 @@ fn parse_document(_conn: &Connection, config: &Config, path: &PathBuf){
     let _ = f.read_to_end(&mut buffer);
     sha256.input(buffer.as_slice());
 
-    let mut sha256_bytes : [u8; 32] = Default::default();
+    let mut sha256_bytes: [u8; 32] = Default::default();
     sha256_bytes.copy_from_slice(&sha256.result()[..32]);
 
-    let mut sha256_hex : String = String::new();
-    sha256_bytes.write_hex(&mut sha256_hex).expect("Unable to write HEX");
+    let mut sha256_hex: String = String::new();
+    sha256_bytes
+        .write_hex(&mut sha256_hex)
+        .expect("Unable to write HEX");
 
     println!("SHA256 Sum: {}", sha256_hex);
 
@@ -96,16 +101,16 @@ fn parse_document(_conn: &Connection, config: &Config, path: &PathBuf){
     //  Step 1: Convert document from PDF to PNG
     //  =====================================================================
 
-
     // TODO: Improve w/ libpoppler.
     // Convert document to images (to use tesseract-rs)
     let mut child = Command::new("pdftoppm")
         .arg(path)
         .arg("-r")
         .arg(config.ocr.dpi.to_string())
-        .arg(format!("tmp/{}",sha256_hex))
+        .arg(format!("tmp/{}", sha256_hex))
         .arg("-png")
-        .spawn().expect("Unable to start pdftoppm");
+        .spawn()
+        .expect("Unable to start pdftoppm");
     let exit_code = child.wait().expect("Execution failed");
 
     if !exit_code.success() {
@@ -119,14 +124,14 @@ fn parse_document(_conn: &Connection, config: &Config, path: &PathBuf){
         =====================================================================
     */
 
-    let mut pages_text : Vec<String> = Vec::new();
+    let mut pages_text: Vec<String> = Vec::new();
 
     let tesseract = Tesseract::new();
-    let paths : Paths = glob(&format!("tmp/{}*.png", sha256_hex)).unwrap();
+    let paths: Paths = glob(&format!("tmp/{}*.png", sha256_hex)).unwrap();
     for entry in paths {
         match entry {
             Ok(path) => {
-                let file_name : String = String::from(path.file_name().unwrap().to_str().unwrap());
+                let file_name: String = String::from(path.file_name().unwrap().to_str().unwrap());
                 let re = Regex::new(r"^.*-(\d+)\.png$").unwrap();
                 if !re.is_match(&file_name) {
                     println!("Regex unmatched");
@@ -144,9 +149,9 @@ fn parse_document(_conn: &Connection, config: &Config, path: &PathBuf){
                 let recognized_text = tesseract.get_text();
                 &mut pages_text.push(String::from(recognized_text));
                 let _ = fs::remove_file(path);
-            },
+            }
 
-            _ => println!("Globbing: Pattern matched but unreadable!")
+            _ => println!("Globbing: Pattern matched but unreadable!"),
         }
     }
 
@@ -158,10 +163,28 @@ fn parse_document(_conn: &Connection, config: &Config, path: &PathBuf){
                 stored documents, {id}.pdf
     */
 
+    let now : DateTime<Utc> = Utc::now();
+    let today_date = now.date();
+
+    // Create a Document (to get an ID!)
+    let q = conn.execute("INSERT INTO documents (correspondent, title, added_on, date, sha256sum) VALUES (
+                NULL,
+                $1,
+                $2,
+                $3,
+                $4);", &[
+                &today_date.format("%Y-%m-%d").to_string(),
+                &today_date.naive_utc(),
+                &today_date.naive_utc(),
+                &sha256_hex
+    ]);
+
+    println!("{:?}", q);
+
     cleanup(&path);
 }
 
-fn document_change(conn: &Connection, config: &Config, event: &DebouncedEvent){
+fn document_change(conn: &Connection, config: &Config, event: &DebouncedEvent) {
     match event {
         DebouncedEvent::Create(p) => {
             parse_document(conn, &config, &p);
@@ -173,7 +196,7 @@ fn document_change(conn: &Connection, config: &Config, event: &DebouncedEvent){
 }
 
 fn main() {
-    let cfg : Config = load_config().unwrap_or(Config::new());
+    let cfg: Config = load_config().unwrap_or(Config::new());
 
     println!("Hostname: {}", cfg.db.hostname);
     println!("Username: {}", cfg.db.username);
@@ -182,11 +205,12 @@ fn main() {
     println!("OCR DPI: {}", cfg.ocr.dpi);
 
     let conn = Connection::connect(
-        format!("postgres://{}:{}@{}:5432",
-                cfg.db.username,
-                cfg.db.password,
-                cfg.db.hostname
-        ), TlsMode::None);
+        format!(
+            "postgres://{}:{}@{}:5432",
+            cfg.db.username, cfg.db.password, cfg.db.hostname
+        ),
+        TlsMode::None,
+    );
 
     if let Err(e) = conn {
         println!("Unable to connect to DB. Error was {}", e.description());
@@ -199,10 +223,13 @@ fn main() {
 
     let c = conn.unwrap();
 
-    Fwatcher::<Box<Fn(&DebouncedEvent)>>::new(dirs, Box::new(move |e|
-    {
-        document_change(&c, &cfg, e);
-    }))
+    Fwatcher::<Box<Fn(&DebouncedEvent)>>::new(
+        dirs,
+        Box::new(move |e| {
+            document_change(&c, &cfg, e);
+        }),
+    )
+    
     .pattern(Pattern::new("*.pdf").unwrap())
     .interval(Duration::new(1, 0))
     .restart(false)

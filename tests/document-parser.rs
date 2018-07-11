@@ -1,4 +1,2 @@
 #[test]
-fn it_reads_config(){
-
-}
+fn it_reads_config() {}
