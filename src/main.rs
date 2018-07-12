@@ -38,6 +38,8 @@ use std::process::Command;
 use tesseract::Tesseract;
 use chrono::prelude::*;
 
+use std::result::Result;
+
 fn load_config() -> Option<Config> {
     if let Ok(mut f) = File::open("./config.yml") {
         let mut content = String::new();
@@ -58,45 +60,9 @@ fn cleanup(path: &PathBuf) {
     let _ = fs::remove_file(path);
 }
 
-fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
-    println!("Parsing document {:?}", path);
+fn perform_ocr(config: &Config, sha256_hex: &str, path: &PathBuf) -> Result<Vec<String>, &'static str> {
 
-    if !path.exists() {
-        println!("Provided path doesn't exists.");
-        return;
-    }
-
-    if !path.is_file() {
-        println!("Provided path is not a file!");
-        return;
-    }
-
-    let _ocr_text: Vec<String> = Vec::new();
-
-    // Calculate SHA256 sum (save as HEX)
-
-    let mut sha256 = sha2::Sha256::default();
-    let mut f = File::open(path).expect("Unable to open this file.");
-    let mut buffer = Vec::new();
-    let _ = f.read_to_end(&mut buffer);
-    sha256.input(buffer.as_slice());
-
-    let mut sha256_bytes: [u8; 32] = Default::default();
-    sha256_bytes.copy_from_slice(&sha256.result()[..32]);
-
-    let mut sha256_hex: String = String::new();
-    sha256_bytes
-        .write_hex(&mut sha256_hex)
-        .expect("Unable to write HEX");
-
-    println!("SHA256 Sum: {}", sha256_hex);
-
-    // TODO: Implement!
-    /*  Step 0:  Use poppler to check if the document has any text on it,
-                if this is the case, ignore the OCR part and just store
-                the document w/ the OCR field set as the document page text.
-        =====================================================================
-    */
+    let mut pages_text : Vec<String> = Vec::new();
 
     //  Step 1: Convert document from PDF to PNG
     //  =====================================================================
@@ -115,7 +81,7 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
 
     if !exit_code.success() {
         // Unable to process document!
-        return;
+        return Err("Unable to convert from PDF to PNG");
     }
 
     /*  Step 2:  OCR the generated files, store the OCR result
@@ -123,8 +89,6 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
                 page => text association.
         =====================================================================
     */
-
-    let mut pages_text: Vec<String> = Vec::new();
 
     let tesseract = Tesseract::new();
     let paths: Paths = glob(&format!("tmp/{}*.png", sha256_hex)).unwrap();
@@ -159,7 +123,84 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
         println!("Recognized text: {}", el);
     }
 
-    /*  Step 3: Send everything to the backend, move the document to the
+    Ok(pages_text)
+}
+
+fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
+    println!("Parsing document {:?}", path);
+
+    if !path.exists() {
+        println!("Provided path doesn't exists.");
+        return;
+    }
+
+    if !path.is_file() {
+        println!("Provided path is not a file!");
+        return;
+    }
+
+    let mut pages_text: Vec<String> = Vec::new();
+
+    // Calculate SHA256 sum (save as HEX)
+
+    let mut sha256 = sha2::Sha256::default();
+    let mut f = File::open(path).expect("Unable to open this file.");
+    let mut buffer = Vec::new();
+    let _ = f.read_to_end(&mut buffer);
+    sha256.input(buffer.as_slice());
+
+    let mut sha256_bytes: [u8; 32] = Default::default();
+    sha256_bytes.copy_from_slice(&sha256.result()[..32]);
+
+    let mut sha256_hex: String = String::new();
+    sha256_bytes
+        .write_hex(&mut sha256_hex)
+        .expect("Unable to write HEX");
+
+    println!("SHA256 Sum: {}", sha256_hex);
+
+    // TODO: Implement!
+    /*  Step 0:  Use poppler to check if the document has any text on it,
+                if this is the case, ignore the OCR part and just store
+                the document w/ the OCR field set as the document page text.
+        =====================================================================
+    */
+
+    let pd = poppler::PopplerDocument::new_from_file(path, "")
+        .expect("Document Parsed Correctly");
+
+    let page_0 = pd.get_page(0).unwrap();
+    let text = page_0.get_text().unwrap();
+
+    let mut doc_empty = true;
+
+    /*  Step 1: Check if the document needs to be OCR'd */
+
+    for i in 0..pd.get_n_pages() {
+        let page = pd.get_page(i).unwrap();
+        let text = page.get_text().unwrap();
+        if !text.is_empty() {
+            doc_empty = false;
+        }
+
+        pages_text.push(String::from(text));
+    }
+
+    if doc_empty {
+        /*  Step 1a: The document needs to be OCR'd  - perform OCR */
+        pages_text = match perform_ocr(&config,  &sha256_hex,&path) {
+            Ok(pt) => {
+                pt
+            }
+
+            Err(e) => {
+                println!("Unable to perform OCR, error was {}", e);
+                Vec::new()
+            }
+        }
+    }
+
+    /*  Step 2: Send everything to the backend, move the document to the
                 stored documents, {id}.pdf
     */
 
