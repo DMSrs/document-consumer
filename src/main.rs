@@ -11,6 +11,7 @@ extern crate chrono;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde_yaml;
+extern crate whatlang;
 
 use std::error::Error;
 
@@ -39,6 +40,8 @@ use tesseract::Tesseract;
 use chrono::prelude::*;
 
 use std::result::Result;
+use whatlang::{detect, Lang, Script};
+use whatlang::Detector;
 
 fn load_config() -> Option<Config> {
     if let Ok(mut f) = File::open("./config.yml") {
@@ -169,9 +172,6 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
     let pd = poppler::PopplerDocument::new_from_file(path, "")
         .expect("Document Parsed Correctly");
 
-    let page_0 = pd.get_page(0).unwrap();
-    let text = page_0.get_text().unwrap();
-
     let mut doc_empty = true;
 
     /*  Step 1: Check if the document needs to be OCR'd */
@@ -200,6 +200,17 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
         }
     }
 
+    let detector = Detector::new();
+    let mut languages_detected : Vec<Option<Lang>> = Vec::new();
+
+    for i in pages_text {
+        languages_detected.push(detector.detect_lang(&i));
+    }
+
+    for i in languages_detected {
+        println!("Language: {:?}", i);
+    }
+
     /*  Step 2: Send everything to the backend, move the document to the
                 stored documents, {id}.pdf
     */
@@ -208,7 +219,7 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
     let today_date = now.date();
 
     // Create a Document (to get an ID!)
-    let q = conn.execute("INSERT INTO documents (correspondent, title, added_on, date, sha256sum) VALUES (
+    match conn.execute("INSERT INTO documents (correspondent, title, added_on, date, sha256sum) VALUES (
                 NULL,
                 $1,
                 $2,
@@ -218,11 +229,16 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
                 &today_date.naive_utc(),
                 &today_date.naive_utc(),
                 &sha256_hex
-    ]);
+    ]) {
+        Ok(r) => {
+            println!("{} rows inserted!", r);
+            cleanup(&path);
+        },
 
-    println!("{:?}", q);
-
-    cleanup(&path);
+        Err(e) => {
+            println!("Unable to add the document to DB. Error was {}", e);
+        }
+    }
 }
 
 fn document_change(conn: &Connection, config: &Config, event: &DebouncedEvent) {
