@@ -203,7 +203,7 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
     let detector = Detector::new();
     let mut languages_detected : Vec<Option<Lang>> = Vec::new();
 
-    for i in pages_text {
+    for i in &pages_text {
         languages_detected.push(detector.detect_lang(&i));
     }
 
@@ -219,19 +219,43 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
     let today_date = now.date();
 
     // Create a Document (to get an ID!)
-    match conn.execute("INSERT INTO documents (correspondent, title, added_on, date, sha256sum) VALUES (
+    match conn.query("INSERT INTO documents (correspondent, title, added_on, date, sha256sum) VALUES (
                 NULL,
                 $1,
                 $2,
                 $3,
-                $4);", &[
+                $4) RETURNING id;", &[
                 &today_date.format("%Y-%m-%d").to_string(),
                 &today_date.naive_utc(),
                 &today_date.naive_utc(),
                 &sha256_hex
     ]) {
         Ok(r) => {
-            println!("{} rows inserted!", r);
+            let doc_id : i32 = r.get(0).get(0);
+
+            println!("ID {} inserted!", doc_id);
+            let mut pn = 1;
+            for i in &pages_text {
+                match conn.execute("INSERT INTO pages (document_id, text, tsv, number) VALUES (\
+                    $1,\
+                    $2,
+                    to_tsvector('english', $2),\
+                    $3);", &[
+                    &doc_id,
+                    &i,
+                    &pn
+                ]) {
+                    Ok(_r) => {
+                        println!("Page {} inserted succesfully!", &pn);
+                    }
+
+                    Err(e) => {
+                        println!("Error while adding {}: {}", &pn, e);
+                    }
+                }
+
+                pn = pn + 1;
+            }
             cleanup(&path);
         },
 
