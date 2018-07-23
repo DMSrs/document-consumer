@@ -7,6 +7,9 @@ extern crate regex;
 extern crate sha2;
 extern crate tesseract;
 extern crate chrono;
+extern crate ansi_term;
+
+#[macro_use] extern crate log;
 
 #[macro_use]
 extern crate serde_derive;
@@ -16,21 +19,22 @@ extern crate whatlang;
 use std::error::Error;
 
 mod models;
-use models::config::Config;
 
+use models::config::Config;
 use std::fs::File;
 
 use postgres::Connection;
+
 use postgres::TlsMode;
 use std::io::prelude::*;
 use std::path::PathBuf;
 use std::time::Duration;
-
 use fwatcher::glob::Pattern;
+
 use fwatcher::notify::DebouncedEvent;
 use fwatcher::Fwatcher;
-
 use glob::{glob, Paths};
+
 use hex::ToHex;
 use regex::Regex;
 use sha2::Digest;
@@ -38,10 +42,14 @@ use std::fs;
 use std::process::Command;
 use tesseract::Tesseract;
 use chrono::prelude::*;
+use log::{Record, Level, Metadata};
+use ansi_term::{Colour, Style};
 
 use std::result::Result;
-use whatlang::{detect, Lang, Script};
+use whatlang::Lang;
 use whatlang::Detector;
+use std::process;
+use log::LevelFilter;
 
 fn load_config() -> Option<Config> {
     if let Ok(mut f) = File::open("./config.yml") {
@@ -108,7 +116,7 @@ fn perform_ocr(config: &Config, sha256_hex: &str, path: &PathBuf) -> Result<Vec<
                 let cap = re.captures(&file_name).unwrap();
                 let page_nr = (&cap[1]).parse::<i32>().unwrap();
 
-                println!("Page number: {}", page_nr);
+                info!("Page number: {}", page_nr);
                 // TODO: HashMap, maybe?
 
                 tesseract.set_lang(&config.ocr.lang);
@@ -118,27 +126,27 @@ fn perform_ocr(config: &Config, sha256_hex: &str, path: &PathBuf) -> Result<Vec<
                 let _ = fs::remove_file(path);
             }
 
-            _ => println!("Globbing: Pattern matched but unreadable!"),
+            _ => warn!("Globbing: Pattern matched but unreadable!"),
         }
     }
 
     for el in pages_text.iter() {
-        println!("Recognized text: {}", el);
+        info!("Recognized text: {}", el);
     }
 
     Ok(pages_text)
 }
 
 fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
-    println!("Parsing document {:?}", path);
+    info!("Parsing document {:?}", path);
 
     if !path.exists() {
-        println!("Provided path doesn't exists.");
+        warn!("Provided path doesn't exists.");
         return;
     }
 
     if !path.is_file() {
-        println!("Provided path is not a file!");
+        warn!("Provided path is not a file!");
         return;
     }
 
@@ -160,7 +168,7 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
         .write_hex(&mut sha256_hex)
         .expect("Unable to write HEX");
 
-    println!("SHA256 Sum: {}", sha256_hex);
+    info!("SHA256 Sum: {}", sha256_hex);
 
     // TODO: Implement!
     /*  Step 0:  Use poppler to check if the document has any text on it,
@@ -170,7 +178,7 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
     */
 
     let pd = poppler::PopplerDocument::new_from_file(path, "")
-        .expect("Document Parsed Correctly");
+        .expect("Unable to open document");
 
     let mut doc_empty = true;
 
@@ -188,13 +196,14 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
 
     if doc_empty {
         /*  Step 1a: The document needs to be OCR'd  - perform OCR */
+        info!("Document is empty!");
         pages_text = match perform_ocr(&config,  &sha256_hex,&path) {
             Ok(pt) => {
                 pt
             }
 
             Err(e) => {
-                println!("Unable to perform OCR, error was {}", e);
+                error!("Unable to perform OCR, error was {}", e);
                 Vec::new()
             }
         }
@@ -232,8 +241,17 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
     ]) {
         Ok(r) => {
             let doc_id : i32 = r.get(0).get(0);
+            info!("ID {} inserted!", doc_id);
 
-            println!("ID {} inserted!", doc_id);
+            let pdf_path = PathBuf::from(format!("{}/pdf", config.paths.data));
+            if !&pdf_path.exists() {
+                warn!("PDF dir doesn't exist, creating it now...");
+                fs::create_dir(&pdf_path).expect("Unable to create PDF dir");
+            }
+
+            let new_path = PathBuf::from(format!("{}/{}.pdf", pdf_path.to_str().unwrap(), doc_id));
+            fs::rename(path, new_path).expect("Unable to move parsed file!");
+
             let mut pn = 1;
             for i in &pages_text {
                 match conn.execute("INSERT INTO pages (document_id, text, tsv, number) VALUES (\
@@ -260,7 +278,7 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
         },
 
         Err(e) => {
-            println!("Unable to add the document to DB. Error was {}", e);
+            error!("Unable to add the document to DB. Error was {}", e);
         }
     }
 }
@@ -271,19 +289,69 @@ fn document_change(conn: &Connection, config: &Config, event: &DebouncedEvent) {
             parse_document(conn, &config, &p);
         }
         _ => {
-            println!("Event not parsed: {:?}", event);
+            info!("Event not parsed: {:?}", event);
         }
     }
 }
 
+struct SimpleLogger;
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= Level::Info
+    }
+
+    fn log(&self, record: &Record) {
+        if self.enabled(record.metadata()) {
+            let style : Style = match record.metadata().level() {
+                Level::Error => {
+                    Style::new().bold().fg(Colour::Red)
+                },
+                Level::Warn => {
+                    Style::new().bold().fg(Colour::Red)
+                },
+                _ => {
+                    Style::new().fg(Colour::Blue)
+                }
+            };
+
+            let input_string = format!("{}", record.args());
+            println!("{}", style.paint(input_string));
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static LOGGER: SimpleLogger = SimpleLogger;
+
 fn main() {
+    log::set_logger(&LOGGER)
+        .map(|()| log::set_max_level(LevelFilter::Info))
+        .expect("Unable to initialize logger");
     let cfg: Config = load_config().unwrap_or(Config::new());
 
-    println!("Hostname: {}", cfg.db.hostname);
-    println!("Username: {}", cfg.db.username);
-    println!("Password: {}", cfg.db.password);
-    println!("OCR Language: {}", cfg.ocr.lang);
-    println!("OCR DPI: {}", cfg.ocr.dpi);
+    info!("Hostname: {}", cfg.db.hostname);
+    info!("Username: {}", cfg.db.username);
+    info!("Password: {}", cfg.db.password);
+    info!("OCR Language: {}", cfg.ocr.lang);
+    info!("OCR DPI: {}", cfg.ocr.dpi);
+    info!("Data Path: {}", cfg.paths.data);
+    info!("Consumption Path: {}", cfg.paths.consumption);
+
+    // Check that data_path exists and is a directory
+    let path = PathBuf::from(&cfg.paths.data);
+    if !path.is_dir() {
+        error!("{} is an invalid data directory.", &cfg.paths.data);
+        process::exit(1);
+    }
+
+    // Check that the consumption dir exists and it's a directory
+    let path = PathBuf::from(&cfg.paths.consumption);
+    if !path.is_dir() {
+        error!("{} is an invalid consumption directory.", &cfg.paths.consumption);
+        process::exit(2);
+    }
 
     let conn = Connection::connect(
         format!(
@@ -294,13 +362,13 @@ fn main() {
     );
 
     if let Err(e) = conn {
-        println!("Unable to connect to DB. Error was {}", e.description());
+        error!("Unable to connect to DB. Error was {}", e.description());
         return;
     }
 
-    println!("DB Connection successful!");
+    info!("DB Connection successful!");
 
-    let dirs = vec![PathBuf::from("consumption-dir/")];
+    let dirs = vec![PathBuf::from(&cfg.paths.consumption)];
 
     let c = conn.unwrap();
 

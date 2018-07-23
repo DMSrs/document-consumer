@@ -2,6 +2,7 @@
 pub struct Config {
     pub db: DbConfig,
     pub ocr: OcrConfig,
+    pub paths: PathsConfig
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -17,11 +18,18 @@ pub struct OcrConfig {
     pub dpi: i32,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PathsConfig {
+    pub data: String,
+    pub consumption: String
+}
+
 impl Config {
     pub fn new() -> Config {
         Config {
             db: DbConfig::new(),
             ocr: OcrConfig::new(),
+            paths: PathsConfig::new()
         }
     }
 }
@@ -41,6 +49,15 @@ impl OcrConfig {
         OcrConfig {
             lang: String::from("eng"),
             dpi: 300,
+        }
+    }
+}
+
+impl PathsConfig {
+    pub fn new() -> PathsConfig {
+        PathsConfig {
+            data: String::new(),
+            consumption: String::new()
         }
     }
 }
