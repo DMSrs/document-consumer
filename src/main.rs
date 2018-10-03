@@ -249,6 +249,9 @@ fn parse_document(conn: &Connection, config: &Config, path: &PathBuf) {
                 fs::create_dir(&pdf_path).expect("Unable to create PDF dir");
             }
 
+            conn.execute("INSERT INTO tags_documents (tag_slug, document_id) VALUES
+                ($1, $2)", &[&"untagged", &doc_id]).expect("Unable to set document tag");
+
             let new_path = PathBuf::from(format!("{}/{}.pdf", pdf_path.to_str().unwrap(), doc_id));
             fs::rename(path, new_path).expect("Unable to move parsed file!");
 
@@ -380,7 +383,7 @@ fn main() {
     )
     
     .pattern(Pattern::new("*.pdf").unwrap())
-    .interval(Duration::new(1, 0))
-    .restart(false)
+    .interval(Duration::new(0, 0))
+    .restart(true)
     .run();
 }
